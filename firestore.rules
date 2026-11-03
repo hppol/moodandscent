@@ -1,0 +1,44 @@
+rules_version = '2';
+
+// 앱에서 쓰는 4개 컬렉션만 열고, 그 외 컬렉션은 모두 차단합니다.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 향수 진열장 기록
+    match /history/{id} {
+      allow read, delete: if true;
+      allow create, update: if request.resource.data.keys().hasAll(
+                                 ['id', 'date', 'luxuryPerfume', 'affordablePerfume'])
+                            && request.resource.data.id == id
+                            && request.resource.data.luxuryPerfume is map
+                            && request.resource.data.affordablePerfume is map;
+    }
+
+    // 👍/👎 피드백 (문서 id = 향수 id, 향수당 1개)
+    match /feedback/{perfumeId} {
+      allow read, delete: if true;
+      allow create, update: if request.resource.data.perfumeId == perfumeId
+                            && request.resource.data.vote in [1, -1];
+    }
+
+    // 위시리스트 (문서 id = 향수 id)
+    match /wishlist/{perfumeId} {
+      allow read, delete: if true;
+      allow create, update: if request.resource.data.perfumeId == perfumeId
+                            && request.resource.data.perfume is map;
+    }
+
+    // 착용 캘린더 (문서 id = yyyy-MM-dd, 하루 1개)
+    match /wear_log/{dateKey} {
+      allow read, delete: if true;
+      allow create, update: if request.resource.data.dateKey == dateKey
+                            && request.resource.data.perfume is map;
+    }
+
+    // AI 검증 로그: 서버가 추가만 하고, 수정·삭제는 불가 (기록 조작 방지)
+    match /recommendation_logs/{id} {
+      allow read, create: if true;
+      allow update, delete: if false;
+    }
+  }
+}
