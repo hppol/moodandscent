@@ -11,6 +11,7 @@ AI는 향수 정보를 '생성'하지 않고, 아래 역할만 맡습니다.
 """
 import json
 import math
+import random
 import time
 from collections import Counter
 from pathlib import Path
@@ -71,7 +72,10 @@ def profile_score(perfume: dict, profile: dict) -> float:
     avoid = set(profile.get("avoid", []))
 
     score = sum(w for a, w in zip(perfume["accords"], ACCORD_WEIGHTS) if a in wanted_accords) * 2
-    score += len(perfume["all_notes"] & wanted_notes) * 1.0
+    # 노트 점수는 '겹친 개수'가 아니라 '그 향수 노트 중 겹친 비율'로 계산 (노트를 길게 공개한 대형 브랜드 편향 방지)
+    # 분모는 최소 4: 노트가 1~2개뿐인 향수가 비율만으로 과하게 유리해지지 않도록
+    if perfume["all_notes"]:
+        score += len(perfume["all_notes"] & wanted_notes) / max(len(perfume["all_notes"]), 4) * 4
     score -= sum(w for a, w in zip(perfume["accords"], ACCORD_WEIGHTS) if a in avoid) * 3
     score -= len(perfume["all_notes"] & avoid) * 1.5
     score += math.log10(perfume.get("rating_count", 0) + 1) * 0.3  # 검증된 대중성 소폭 가산
@@ -96,9 +100,20 @@ def _usable(p: dict, profile: dict, tier: str) -> bool:
             and _gender_ok(p, profile.get("gender", "any")))
 
 
+MAX_PER_BRAND_IN_CANDIDATES = 2
+
+
 def top_candidates(db: list[dict], profile: dict, tier: str, k: int) -> list[dict]:
-    pool = [p for p in db if _usable(p, profile, tier)]
-    return sorted(pool, key=lambda p: profile_score(p, profile), reverse=True)[:k]
+    """점수 높은 순으로 k개, 단 한 브랜드는 최대 MAX_PER_BRAND_IN_CANDIDATES개 (다양한 브랜드가 후보에 오르도록)"""
+    pool = sorted((p for p in db if _usable(p, profile, tier)), key=lambda p: profile_score(p, profile), reverse=True)
+    picked, per_brand = [], Counter()
+    for p in pool:
+        if per_brand[p["brand"]] < MAX_PER_BRAND_IN_CANDIDATES:
+            picked.append(p)
+            per_brand[p["brand"]] += 1
+            if len(picked) == k:
+                break
+    return picked
 
 
 def pick_dupe(db: list[dict], luxury: dict, profile: dict) -> tuple[dict, float, list[str], list[str]]:
@@ -184,8 +199,10 @@ def choose_luxury(client, candidates: list[dict], caption: str, mood_text: str, 
     system = f"""
     You are a master perfumer. Choose the ONE perfume from the CANDIDATES list that best fits
     the user's outfit, situation and weather. You MUST answer with an id copied exactly from the list.
-    CANDIDATES (id | name | accords | notes):
-    {chr(10).join(_candidate_line(p) for p in candidates)}
+    Judge ONLY by how well the accords and notes fit the situation. Do NOT favor famous brands or
+    best-sellers; a lesser-known niche perfume is equally welcome when it fits better.
+    CANDIDATES (shuffled, id | name | accords | notes):
+    {chr(10).join(_candidate_line(p) for p in random.sample(candidates, len(candidates)))}
 
     Return JSON: {{"id": "<candidate id>"}}
     """
@@ -240,11 +257,33 @@ def write_copy(client, luxury: dict, dupe: dict, shared_notes: list[str],
       "killing_quote_kr": "잡지 커버용 감성 한 줄 카피",
       "tpo_analysis_kr": "유저 상황 맞춤 위트 있는 에티켓 팁 2문장",
       "visualized_ingredients_kr": "이미지에 등장시킬 럭셔리 픽 노트 재료 3~4개 (한국어, 쉼표 구분)",
-      "sd_prompt_en": "high-end luxury perfume still life photography, elegant glass bottle, [3-5 tangible ingredients from the LUXURY notes], warm golden hour light, minimalist marble and linen, 35mm film, Kinfolk style, no humans, no text"
+      "sd_ingredients_en": "3-5 tangible, drawable ingredients from the LUXURY notes in English, comma separated (e.g. sliced lemon, fresh mint leaves, white jasmine flowers). Skip abstract notes such as musk, amber, aldehydes, ambroxan."
     }}
     """
     user = f"Current weather: {weather_text}\nOutfit from photo: {caption}\nUser message: {mood_text}"
     return _ask_json(client, system, user, temperature=0.7, model=WRITER_MODEL, timeout=WRITER_TIMEOUT, used=used)
+
+
+# ==========================================
+# 무드보드 이미지 문장 (향수병 없이 노트 재료만, 과슈 일러스트 플랫레이)
+# - 'perfume', 'bottle' 같은 단어가 들어가면 SD-Turbo가 병을 그리므로 문장에 넣지 않음
+# ==========================================
+IMAGE_STYLE = ("flat gouache illustration, top-down flat lay of {ing}, each ingredient clearly separated, "
+               "simple bold shapes, muted earthy palette, plain warm cream background, editorial magazine illustration")
+_ABSTRACT_NOTES = {"musk", "white musk", "amber", "ambergris", "ambroxan", "aldehydes", "cashmeran", "iso e super",
+                   "woody notes", "woodsy notes", "green notes", "floral notes", "sea notes", "spices", "citruses",
+                   "fruity notes", "white flowers", "amberwood"}
+
+
+def image_prompt(copy: dict, card: dict) -> str:
+    ing = str(copy.get("sd_ingredients_en", "")).strip()
+    if not ing:
+        # AI가 비워 두면 DB 노트 중 그릴 수 있는 것으로 대체
+        notes = card.get("top_notes", []) + card.get("middle_notes", []) + card.get("base_notes", []) + card.get("notes", [])
+        ing = ", ".join([n for n in notes if n not in _ABSTRACT_NOTES][:4]) or ", ".join(card.get("accords", [])[:3])
+    for banned in ("perfume", "bottle", "fragrance", "flacon"):
+        ing = ing.replace(banned, "")
+    return IMAGE_STYLE.format(ing=ing)
 
 
 # ==========================================

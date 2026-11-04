@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../models/curation_history.dart';
 import 'result_screen.dart';
-import 'wear_calendar_view.dart';
+import '../services/scent_store.dart';
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
@@ -15,8 +15,10 @@ class HistoryScreen extends StatefulWidget {
 class _HistoryScreenState extends State<HistoryScreen> {
   List<CurationHistoryItem> _historyItems = [];
   bool _isLoading = true;
-  // 0: 버추얼 원목 진열장 쇼룸(Shelf View), 1: 에디토리얼 리스트 뷰(List View), 2: 착용 캘린더
+  // 0: 날짜별 선반 진열장, 1: 날짜별 목록
   int _viewMode = 0;
+  // 착용 캘린더에 기록된 조합 (진열장 기록 id → 실제로 뿌린 향수 id), 목록의 '📅 착용' 표시용
+  Map<String, String> _wornByHistory = {};
 
   @override
   void initState() {
@@ -25,10 +27,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Future<void> _loadHistory() async {
-    final items = await CurationHistoryItem.getHistory();
+    final results = await Future.wait([CurationHistoryItem.getHistory(), ScentStore.getWearLog()]);
+    final wear = results[1] as Map<String, Map<String, dynamic>>;
     if (mounted) {
       setState(() {
-        _historyItems = items;
+        _historyItems = results[0] as List<CurationHistoryItem>;
+        _wornByHistory = {
+          for (final w in wear.values)
+            if ((w['historyId'] ?? '').toString().isNotEmpty)
+              w['historyId'] as String: ((w['perfume'] as Map?)?['id'] ?? '').toString(),
+        };
         _isLoading = false;
       });
     }
@@ -93,6 +101,75 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
   }
 
+  // 길게 누르기(진열장) / 밀어서(목록) 삭제 전 확인
+  Future<bool> _confirmDelete(CurationHistoryItem item) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFFFBF9F5),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text('진열장에서 뺄까요?',
+            style: GoogleFonts.notoSans(fontWeight: FontWeight.w700, fontSize: 16)),
+        content: Text(
+          '${item.date} · ${item.luxuryPerfume['name'] ?? ''}',
+          style: GoogleFonts.notoSans(fontSize: 13, color: const Color(0xFF55504A)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('취소', style: GoogleFonts.notoSans(color: const Color(0xFF7A7062))),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text('빼기',
+                style: GoogleFonts.notoSans(
+                    color: const Color(0xFFB33927), fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+    return ok == true;
+  }
+
+  void _openResult(CurationHistoryItem item) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ResultScreen(
+          luxuryPerfume: item.luxuryPerfume,
+          affordablePerfume: item.affordablePerfume,
+          visualizedIngredients: item.visualizedIngredients,
+          tpoAnalysis: item.tpoAnalysis,
+          base64Image: item.base64Image,
+          weatherBadge: item.weatherBadge,
+          killingQuote: item.killingQuote,
+          userOotdBase64: item.userOotdBase64,
+          historyId: item.id,
+          historyDate: item.date,
+          userStory: item.userStory,
+        ),
+      ),
+    ).then((_) => _loadHistory()); // 결과 화면에서 착용 기록을 남겼을 수 있음
+  }
+
+  // '2026.11.02' → ('11월 2일', '일요일')
+  (String, String) _dateLabel(String date) {
+    final p = date.split('.');
+    if (p.length != 3) return (date, '');
+    final d = DateTime(int.parse(p[0]), int.parse(p[1]), int.parse(p[2]));
+    const weekdays = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
+    return ('${d.month}월 ${d.day}일', weekdays[d.weekday % 7]);
+  }
+
+  // 날짜별로 묶기 (진열장 기록은 최신순)
+  List<MapEntry<String, List<CurationHistoryItem>>> get _groupedByDate {
+    final groups = <String, List<CurationHistoryItem>>{};
+    for (final item in _historyItems) {
+      groups.putIfAbsent(item.date, () => []).add(item);
+    }
+    return groups.entries.toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -102,11 +179,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         elevation: 0,
         centerTitle: true,
         leading: IconButton(
-          icon: const Icon(
-            Icons.arrow_back_ios_new,
-            size: 18,
-            color: Color(0xFF222222),
-          ),
+          icon: const Icon(Icons.arrow_back_ios_new, size: 18, color: Color(0xFF222222)),
           onPressed: () => Navigator.pop(context),
         ),
         title: Text(
@@ -121,123 +194,50 @@ class _HistoryScreenState extends State<HistoryScreen> {
         actions: [
           if (_historyItems.isNotEmpty)
             IconButton(
-              icon: const Icon(
-                Icons.delete_sweep_outlined,
-                size: 22,
-                color: Color(0xFF888075),
-              ),
+              icon: const Icon(Icons.delete_sweep_outlined, size: 22, color: Color(0xFF888075)),
               tooltip: '진열장 전체 비우기',
               onPressed: _clearAll,
             ),
         ],
       ),
       body: _isLoading
-          ? const Center(
-              child: CircularProgressIndicator(color: Color(0xFF8C7B65)),
-            )
-          : _historyItems.isEmpty && _viewMode != 2
-          ? _buildEmptyState()
-          : Column(
-              children: [
-                const SizedBox(height: 8),
-
-                // 상단 컨트롤 바: 진열장 컬렉션 현황 + 뷰 모드 토글
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20.0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      // 수집된 보틀 수 뱃지 (좁은 화면에서는 줄어듦)
-                      Flexible(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 6,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: const Color(0xFFE8E2D6)),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.03),
-                                blurRadius: 6,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(
-                                Icons.auto_awesome,
-                                size: 13,
-                                color: Color(0xFF8C7B65),
-                              ),
-                              const SizedBox(width: 6),
-                              Flexible(
-                                child: Text(
-                                  '수집된 향수 ${_historyItems.length}병',
-                                  overflow: TextOverflow.ellipsis,
-                                  style: GoogleFonts.notoSans(
-                                    fontSize: 11.5,
-                                    fontWeight: FontWeight.w600,
-                                    color: const Color(0xFF5A5245),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
+          ? const Center(child: CircularProgressIndicator(color: Color(0xFF8C7B65)))
+          : _historyItems.isEmpty
+              ? _buildEmptyState()
+              : Column(
+                  children: [
+                    const SizedBox(height: 4),
+                    // 보기 방식 전환 (진열장 / 목록)
+                    Container(
+                      padding: const EdgeInsets.all(3),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFECE7DE),
+                        borderRadius: BorderRadius.circular(12),
                       ),
-                      const SizedBox(width: 8),
-
-                      // 뷰 모드 스위처 (진열장 쇼룸 vs 상세 리스트)
-                      Container(
-                        padding: const EdgeInsets.all(3),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFECE7DE),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Row(
-                          children: [
-                            _buildViewToggleBtn(
-                              icon: Icons.shelves,
-                              label: '진열장',
-                              isSelected: _viewMode == 0,
-                              onTap: () => setState(() => _viewMode = 0),
-                            ),
-                            _buildViewToggleBtn(
-                              icon: Icons.view_agenda_outlined,
-                              label: '목록',
-                              isSelected: _viewMode == 1,
-                              onTap: () => setState(() => _viewMode = 1),
-                            ),
-                            _buildViewToggleBtn(
-                              icon: Icons.calendar_month_outlined,
-                              label: '캘린더',
-                              isSelected: _viewMode == 2,
-                              onTap: () => setState(() => _viewMode = 2),
-                            ),
-                          ],
-                        ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _buildViewToggleBtn(
+                            icon: Icons.shelves,
+                            label: '진열장',
+                            isSelected: _viewMode == 0,
+                            onTap: () => setState(() => _viewMode = 0),
+                          ),
+                          _buildViewToggleBtn(
+                            icon: Icons.view_agenda_outlined,
+                            label: '목록',
+                            isSelected: _viewMode == 1,
+                            onTap: () => setState(() => _viewMode = 1),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(height: 10),
+                    Expanded(
+                      child: _viewMode == 0 ? _buildShelfShowroomView() : _buildListView(),
+                    ),
+                  ],
                 ),
-
-                const SizedBox(height: 16),
-
-                // 메인 쇼룸 화면
-                Expanded(
-                  child: _viewMode == 0
-                      ? _buildShelfShowroomView()
-                      : _viewMode == 1
-                      ? _buildListView()
-                      : WearCalendarView(history: _historyItems),
-                ),
-              ],
-            ),
     );
   }
 
@@ -252,7 +252,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
         decoration: BoxDecoration(
           color: isSelected ? Colors.white : Colors.transparent,
           borderRadius: BorderRadius.circular(9),
@@ -268,22 +268,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
         ),
         child: Row(
           children: [
-            Icon(
-              icon,
-              size: 14,
-              color: isSelected
-                  ? const Color(0xFF1E1E1E)
-                  : const Color(0xFF888075),
-            ),
-            const SizedBox(width: 4),
+            Icon(icon,
+                size: 14,
+                color: isSelected ? const Color(0xFF1E1E1E) : const Color(0xFF888075)),
+            const SizedBox(width: 5),
             Text(
               label,
               style: GoogleFonts.notoSans(
-                fontSize: 11,
+                fontSize: 12,
                 fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                color: isSelected
-                    ? const Color(0xFF1E1E1E)
-                    : const Color(0xFF888075),
+                color: isSelected ? const Color(0xFF1E1E1E) : const Color(0xFF888075),
               ),
             ),
           ],
@@ -292,435 +286,33 @@ class _HistoryScreenState extends State<HistoryScreen> {
     );
   }
 
-  // =========================================================================
-  // [모드 1] 버추얼 원목 선반 쇼룸 뷰 (Virtual Wooden Shelf View - 3열 슬림 보틀)
-  // =========================================================================
-  Widget _buildShelfShowroomView() {
-    // 3개씩 짝지어 선반 층(Row) 구성 (아기자기하고 슬림한 3열 진열장)
-    final List<List<CurationHistoryItem?>> shelfRows = [];
-    for (int i = 0; i < _historyItems.length; i += 3) {
-      final item1 = _historyItems[i];
-      final item2 = (i + 1 < _historyItems.length)
-          ? _historyItems[i + 1]
-          : null;
-      final item3 = (i + 2 < _historyItems.length)
-          ? _historyItems[i + 2]
-          : null;
-      shelfRows.add([item1, item2, item3]);
-    }
-
-    // 마지막 선반이 꽉 찼으면 다음 향수 수집을 유도하는 빈 슬롯 선반 1개 추가
-    if (shelfRows.isNotEmpty && shelfRows.last[2] != null) {
-      shelfRows.add([null, null, null]);
-    }
-
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 420),
-        child: ListView.builder(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-          itemCount: shelfRows.length,
-          itemBuilder: (context, rowIndex) {
-            final triplet = shelfRows[rowIndex];
-
-            return Column(
-              children: [
-                // 선반 층수 라벨
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 10.0),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Container(
-                          height: 1,
-                          color: const Color(0xFFE2DCCF),
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                        child: Text(
-                          'SHELF 0${rowIndex + 1}',
-                          style: GoogleFonts.cormorantGaramond(
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 2.5,
-                            color: const Color(0xFF9E9282),
-                          ),
-                        ),
-                      ),
-                      Expanded(
-                        child: Container(
-                          height: 1,
-                          color: const Color(0xFFE2DCCF),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                // 선반 위에 진열된 3개의 슬림 향수 보틀
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    triplet[0] != null
-                        ? _buildShelfBottleCard(triplet[0]!)
-                        : _buildEmptyShelfSlot(),
-                    triplet[1] != null
-                        ? _buildShelfBottleCard(triplet[1]!)
-                        : _buildEmptyShelfSlot(),
-                    triplet[2] != null
-                        ? _buildShelfBottleCard(triplet[2]!)
-                        : _buildEmptyShelfSlot(),
-                  ],
-                ),
-
-                // 입체적인 3D 원목 선반 받침대
-                _buildWoodenShelfPlinth(),
-              ],
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  // 선반 위 슬림 향수 보틀 & 황동 미니 명판 카드 (가로 < 세로 수직형 아틀리에 보틀)
-  Widget _buildShelfBottleCard(CurationHistoryItem item) {
-    final luxury = item.luxuryPerfume;
-    final brand = (luxury['brand'] ?? '').toUpperCase();
-    final name = luxury['name'] ?? '';
-
-    return GestureDetector(
-      onTap: () {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => ResultScreen(
-              luxuryPerfume: item.luxuryPerfume,
-              affordablePerfume: item.affordablePerfume,
-              visualizedIngredients: item.visualizedIngredients,
-              tpoAnalysis: item.tpoAnalysis,
-              base64Image: item.base64Image,
-              weatherBadge: item.weatherBadge,
-              killingQuote: item.killingQuote,
-              userOotdBase64: item.userOotdBase64,
-              historyId: item.id,
-              historyDate: item.date,
-              userStory: item.userStory,
-            ),
-          ),
-        );
-      },
-      child: SizedBox(
-        width: 96,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // 미니 향수 보틀 캡 (Perfume Bottle Cap)
-            Container(
-              width: 22,
-              height: 7,
-              decoration: BoxDecoration(
-                color: const Color(0xFF221F1B),
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(3),
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.15),
-                    blurRadius: 2,
-                    offset: const Offset(0, 1),
-                  ),
-                ],
-              ),
-            ),
-
-            // 향수 보틀 바디 (가로 96 x 세로 136: 확실한 세로형 슬림 비율!)
-            Container(
-              width: 96,
-              height: 136,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(16),
-                  bottom: Radius.circular(6),
-                ),
-                border: Border.all(color: const Color(0xFFE5DEC8), width: 1.2),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFF382A1E).withOpacity(0.14),
-                    blurRadius: 10,
-                    offset: const Offset(0, 5),
-                  ),
-                ],
-              ),
-              child: Stack(
-                children: [
-                  // AI 무드보드 이미지
-                  ClipRRect(
-                    borderRadius: const BorderRadius.vertical(
-                      top: Radius.circular(15),
-                      bottom: Radius.circular(5),
-                    ),
-                    child: Image.memory(
-                      base64Decode(item.base64Image),
-                      width: double.infinity,
-                      height: double.infinity,
-                      fit: BoxFit.cover,
-                    ),
-                  ),
-
-                  // 은은한 글래스 앰비언트 비네트
-                  Container(
-                    decoration: BoxDecoration(
-                      borderRadius: const BorderRadius.vertical(
-                        top: Radius.circular(15),
-                        bottom: Radius.circular(5),
-                      ),
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          Colors.black.withOpacity(0.52),
-                          Colors.transparent,
-                          Colors.black.withOpacity(0.42),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  // 상단 브랜드 텍스트
-                  Positioned(
-                    top: 6,
-                    left: 4,
-                    right: 20,
-                    child: Text(
-                      brand,
-                      style: GoogleFonts.cormorantGaramond(
-                        fontSize: 8.5,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 1.5,
-                        color: const Color(0xFFFAF6EE),
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-
-                  // 삭제 버튼 (미니멀)
-                  Positioned(
-                    top: 4,
-                    right: 4,
-                    child: GestureDetector(
-                      onTap: () => _deleteItem(item.id),
-                      child: Container(
-                        padding: const EdgeInsets.all(2.5),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.4),
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(
-                          Icons.close,
-                          size: 9,
-                          color: Colors.white70,
-                        ),
-                      ),
-                    ),
-                  ),
-
-                  // 하단 유저 착장 미니 폴라로이드 스티커
-                  if (item.userOotdBase64.isNotEmpty)
-                    Positioned(
-                      bottom: 4,
-                      right: 4,
-                      child: Container(
-                        padding: const EdgeInsets.all(2),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(4),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.2),
-                              blurRadius: 4,
-                            ),
-                          ],
-                        ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(2),
-                          child: Image.memory(
-                            base64Decode(item.userOotdBase64),
-                            width: 24,
-                            height: 30,
-                            fit: BoxFit.cover,
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 5),
-
-            // 선반 위 황동 미니 명판 (Brass Plaque)
-            Container(
-              width: 96,
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3.5),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFFDF9),
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: const Color(0xFFE2D9CC)),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.04),
-                    blurRadius: 3,
-                    offset: const Offset(0, 1),
-                  ),
-                ],
-              ),
-              child: Column(
-                children: [
-                  Text(
-                    name,
-                    textAlign: TextAlign.center,
-                    style: GoogleFonts.playfairDisplay(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: const Color(0xFF26221D),
-                      height: 1.2,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 1),
-                  Text(
-                    item.date,
-                    style: GoogleFonts.notoSans(
-                      fontSize: 8.5,
-                      color: const Color(0xFF968875),
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // 선반 위 빈 슬롯 (다음 착장 진열 유도)
-  Widget _buildEmptyShelfSlot() {
-    return GestureDetector(
-      onTap: () => Navigator.pop(context),
-      child: SizedBox(
-        width: 96,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // 보틀 캡 더미
-            Container(
-              width: 22,
-              height: 7,
-              decoration: BoxDecoration(
-                color: const Color(0xFFDED8CE).withOpacity(0.5),
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(3),
-                ),
-              ),
-            ),
-            Container(
-              width: 96,
-              height: 136,
-              decoration: BoxDecoration(
-                color: const Color(0xFFEFECE5).withOpacity(0.4),
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(16),
-                  bottom: Radius.circular(6),
-                ),
-                border: Border.all(
-                  color: const Color(0xFFDDD5C7),
-                  width: 1.2,
-                  strokeAlign: BorderSide.strokeAlignInside,
-                ),
-              ),
-              child: Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(7),
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: const Color(0xFFE5DEC8).withOpacity(0.8),
-                      ),
-                      child: const Icon(
-                        Icons.add,
-                        size: 16,
-                        color: Color(0xFF8C7B65),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      '새 착장 진열',
-                      style: GoogleFonts.notoSans(
-                        fontSize: 9.5,
-                        fontWeight: FontWeight.w600,
-                        color: const Color(0xFF8C7B65),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 5),
-            Container(
-              width: 96,
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3.5),
-              decoration: BoxDecoration(
-                color: const Color(0xFFECE7DE).withOpacity(0.5),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Text(
-                'EMPTY',
-                textAlign: TextAlign.center,
-                style: GoogleFonts.cormorantGaramond(
-                  fontSize: 9,
-                  letterSpacing: 2.0,
+  // 날짜 머리글 (진열장·목록 공용)
+  Widget _dateHeader(String date) {
+    final (day, weekday) = _dateLabel(date);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 0, 4, 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Text(day,
+              style: GoogleFonts.playfairDisplay(
+                  fontSize: 17,
+                  fontStyle: FontStyle.italic,
                   fontWeight: FontWeight.w700,
-                  color: const Color(0xFFA69D8F),
-                ),
-              ),
+                  color: const Color(0xFF2B2520))),
+          const SizedBox(width: 6),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 2),
+            child: Text(weekday,
+                style: GoogleFonts.notoSans(fontSize: 11.5, color: const Color(0xFF9E9282))),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Container(
+              height: 1,
+              margin: const EdgeInsets.only(bottom: 6),
+              color: const Color(0xFFE2DCCF),
             ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // 입체적인 3D 원목 선반 받침대
-  Widget _buildWoodenShelfPlinth() {
-    return Container(
-      margin: const EdgeInsets.only(top: 6, bottom: 24),
-      height: 11,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(3),
-        gradient: const LinearGradient(
-          colors: [
-            Color(0xFF947B62), // 상단 하이라이트 원목 엣지
-            Color(0xFF6B533E), // 메인 월넛 우드
-            Color(0xFF483526), // 하단 섀도우
-          ],
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.18),
-            blurRadius: 6,
-            offset: const Offset(0, 3),
           ),
         ],
       ),
@@ -728,143 +320,436 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   // =========================================================================
-  // [모드 2] 에디토리얼 리스트 뷰 (Editorial List View)
+  // [보기 1] 진열장: 날짜별 선반 위에 향수병 (선반마다 위에서 비추는 조명)
   // =========================================================================
-  Widget _buildListView() {
-    return ListView.separated(
-      padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 8.0),
-      itemCount: _historyItems.length,
-      separatorBuilder: (context, index) => const SizedBox(height: 14),
-      itemBuilder: (context, index) {
-        final item = _historyItems[index];
-        final luxury = item.luxuryPerfume;
-        final affordable = item.affordablePerfume;
-
-        return GestureDetector(
-          onTap: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => ResultScreen(
-                  luxuryPerfume: item.luxuryPerfume,
-                  affordablePerfume: item.affordablePerfume,
-                  visualizedIngredients: item.visualizedIngredients,
-                  tpoAnalysis: item.tpoAnalysis,
-                  base64Image: item.base64Image,
-                  weatherBadge: item.weatherBadge,
-                  killingQuote: item.killingQuote,
-                  userOotdBase64: item.userOotdBase64,
-                  historyId: item.id,
-                  historyDate: item.date,
-                  userStory: item.userStory,
+  Widget _buildShelfShowroomView() {
+    final groups = _groupedByDate;
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 440),
+        child: ListView.builder(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+          itemCount: groups.length + 1,
+          itemBuilder: (context, index) {
+            if (index == groups.length) {
+              return Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  '향수병을 누르면 그날의 추천을, 길게 누르면 진열장에서 뺄 수 있어요.',
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.notoSans(fontSize: 11, color: const Color(0xFFA69D8F)),
                 ),
+              );
+            }
+            final group = groups[index];
+            final rows = <List<CurationHistoryItem>>[];
+            for (var i = 0; i < group.value.length; i += 3) {
+              rows.add(group.value.sublist(i, (i + 3).clamp(0, group.value.length)));
+            }
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 18),
+              child: Column(
+                children: [
+                  _dateHeader(group.key),
+                  for (final row in rows) _shelfRow(row),
+                ],
               ),
             );
           },
-          child: Container(
-            padding: const EdgeInsets.all(15),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: const Color(0xFFECE7DE)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.03),
-                  blurRadius: 14,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // 무드보드 썸네일
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(14),
-                  child: Container(
-                    width: 85,
-                    height: 85,
-                    color: const Color(0xFFECE7DE),
-                    child: item.base64Image.isNotEmpty
-                        ? Image.memory(
-                            base64Decode(item.base64Image),
-                            fit: BoxFit.cover,
-                          )
-                        : const Icon(Icons.image, color: Colors.grey),
-                  ),
-                ),
-                const SizedBox(width: 14),
+        ),
+      ),
+    );
+  }
 
-                // 정보 영역
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+  Widget _shelfRow(List<CurationHistoryItem> row) {
+    return Stack(
+      children: [
+        // 선반 위 조명 (위에서 아래로 퍼지는 따뜻한 빛)
+        Positioned.fill(
+          child: IgnorePointer(
+            child: Container(
+              decoration: const BoxDecoration(
+                gradient: RadialGradient(
+                  center: Alignment(0, -1.1),
+                  radius: 1.1,
+                  colors: [Color(0xFFFFFBF1), Color(0x00F7F5F0)],
+                ),
+              ),
+            ),
+          ),
+        ),
+        Column(
+          children: [
+            const SizedBox(height: 14),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: row.map(_buildShelfBottleCard).toList(),
+            ),
+            _buildWoodenShelfPlinth(),
+          ],
+        ),
+      ],
+    );
+  }
+
+  // 향수병: 금색 뚜껑 → 목 → 유리 바디(무드보드 라벨 + 반사광) → 황동 명판
+  Widget _buildShelfBottleCard(CurationHistoryItem item) {
+    final luxury = item.luxuryPerfume;
+    final brand = (luxury['brand'] ?? '').toString().toUpperCase();
+    final name = luxury['name'] ?? '';
+
+    return GestureDetector(
+      onTap: () => _openResult(item),
+      onLongPress: () async {
+        if (await _confirmDelete(item)) _deleteItem(item.id);
+      },
+      child: SizedBox(
+        width: 98,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 뚜껑
+            Container(
+              width: 34,
+              height: 16,
+              decoration: BoxDecoration(
+                borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(4), bottom: Radius.circular(2)),
+                gradient: const LinearGradient(
+                  colors: [Color(0xFFE9D3A3), Color(0xFFB8955A), Color(0xFF8E6E3B)],
+                  stops: [0.0, 0.55, 1.0],
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.18),
+                    blurRadius: 3,
+                    offset: const Offset(0, 1),
+                  ),
+                ],
+              ),
+            ),
+            // 목
+            Container(
+              width: 22,
+              height: 6,
+              decoration: BoxDecoration(
+                color: const Color(0xFFDCD3C2),
+                border: Border.all(color: const Color(0xFFCFC4AF), width: 0.8),
+              ),
+            ),
+            // 유리 바디
+            Container(
+              width: 90,
+              height: 120,
+              decoration: BoxDecoration(
+                borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(24), bottom: Radius.circular(12)),
+                gradient: const LinearGradient(
+                  colors: [Color(0xFFFFFFFF), Color(0xFFF2EDE4)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                border: Border.all(color: const Color(0xFFE0D6C3), width: 1.2),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF382A1E).withOpacity(0.16),
+                    blurRadius: 12,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: Stack(
+                children: [
+                  // 라벨 창 (AI 무드보드)
+                  Positioned(
+                    left: 9,
+                    right: 9,
+                    top: 14,
+                    bottom: 10,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Stack(
+                        fit: StackFit.expand,
                         children: [
-                          Text(
-                            item.date,
-                            style: GoogleFonts.notoSans(
-                              fontSize: 11,
-                              color: const Color(0xFF8C7B65),
-                              fontWeight: FontWeight.w600,
+                          if (item.base64Image.isNotEmpty)
+                            Image.memory(base64Decode(item.base64Image), fit: BoxFit.cover)
+                          else
+                            Container(color: const Color(0xFFE9E1D3)),
+                          Container(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [Colors.transparent, Colors.black.withOpacity(0.55)],
+                                stops: const [0.45, 1.0],
+                              ),
                             ),
                           ),
-                          GestureDetector(
-                            onTap: () => _deleteItem(item.id),
-                            child: const Icon(
-                              Icons.close,
-                              size: 16,
-                              color: Color(0xFFBDBDBD),
+                          Positioned(
+                            left: 5,
+                            right: 5,
+                            bottom: 5,
+                            child: Text(
+                              brand,
+                              textAlign: TextAlign.center,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: GoogleFonts.cormorantGaramond(
+                                fontSize: 9,
+                                height: 1.1,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 1.2,
+                                color: const Color(0xFFFAF6EE),
+                              ),
                             ),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 3),
-                      Text(
-                        '${luxury['brand'] ?? ''} · ${luxury['name'] ?? ''}',
-                        style: GoogleFonts.playfairDisplay(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                          color: const Color(0xFF222222),
+                    ),
+                  ),
+                  // 유리 반사광
+                  Positioned(
+                    left: 4,
+                    top: 12,
+                    bottom: 16,
+                    child: Container(
+                      width: 4,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(4),
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [Colors.white.withOpacity(0.9), Colors.white.withOpacity(0.0)],
                         ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 6),
+            // 황동 명판
+            Container(
+              width: 98,
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(5),
+                gradient: const LinearGradient(colors: [Color(0xFFF6EBD3), Color(0xFFE6D3AB)]),
+                border: Border.all(color: const Color(0xFFD5C19A)),
+              ),
+              child: Text(
+                name,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: GoogleFonts.playfairDisplay(
+                  fontSize: 10,
+                  height: 1.2,
+                  fontWeight: FontWeight.w700,
+                  color: const Color(0xFF3A2F22),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 원목 선반 (윗면 + 앞면 + 그림자)
+  Widget _buildWoodenShelfPlinth() {
+    return Column(
+      children: [
+        const SizedBox(height: 8),
+        Container(
+          height: 7,
+          decoration: const BoxDecoration(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(3)),
+            gradient: LinearGradient(
+                colors: [Color(0xFFB59775), Color(0xFFA2835F), Color(0xFFB59775)]),
+          ),
+        ),
+        Container(
+          height: 10,
+          decoration: BoxDecoration(
+            borderRadius: const BorderRadius.vertical(bottom: Radius.circular(3)),
+            gradient: const LinearGradient(
+              colors: [Color(0xFF7A5E44), Color(0xFF5A4331)],
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.18),
+                blurRadius: 8,
+                offset: const Offset(0, 5),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  // =========================================================================
+  // [보기 2] 목록: 날짜별 매거진 타임라인 (밀어서 빼기)
+  // =========================================================================
+  Widget _buildListView() {
+    final groups = _groupedByDate;
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 640),
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(18, 8, 18, 32),
+          children: [
+            for (final group in groups) ...[
+              _dateHeader(group.key),
+              for (final item in group.value) _listCard(item),
+              const SizedBox(height: 10),
+            ],
+            Text(
+              '카드를 왼쪽으로 밀면 진열장에서 뺄 수 있어요.',
+              textAlign: TextAlign.center,
+              style: GoogleFonts.notoSans(fontSize: 11, color: const Color(0xFFA69D8F)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _listCard(CurationHistoryItem item) {
+    final luxury = item.luxuryPerfume;
+    final affordable = item.affordablePerfume;
+    final wornPerfume = _wornByHistory[item.id];
+
+    Widget perfumeChip(Map<String, dynamic> p, String emoji, Color tint) {
+      final worn = wornPerfume != null && wornPerfume == p['id'];
+      return Container(
+        margin: const EdgeInsets.only(top: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: tint,
+          borderRadius: BorderRadius.circular(10),
+          border: worn ? Border.all(color: const Color(0xFF8C7B65), width: 1.2) : null,
+        ),
+        child: Row(
+          children: [
+            Text(emoji, style: const TextStyle(fontSize: 12)),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text.rich(
+                TextSpan(children: [
+                  TextSpan(
+                    text: '${p['brand'] ?? ''}  ',
+                    style: GoogleFonts.notoSans(fontSize: 10.5, color: const Color(0xFF8C7B65)),
+                  ),
+                  TextSpan(
+                    text: p['name'] ?? '',
+                    style: GoogleFonts.notoSans(
+                        fontSize: 12, fontWeight: FontWeight.w700, color: const Color(0xFF2B2824)),
+                  ),
+                ]),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            if (worn) ...[
+              const SizedBox(width: 6),
+              Text('📅 착용',
+                  style: GoogleFonts.notoSans(
+                      fontSize: 10.5, fontWeight: FontWeight.w700, color: const Color(0xFF8C7B65))),
+            ],
+          ],
+        ),
+      );
+    }
+
+    return Dismissible(
+      key: ValueKey(item.id),
+      direction: DismissDirection.endToStart,
+      confirmDismiss: (_) => _confirmDelete(item),
+      onDismissed: (_) => _deleteItem(item.id),
+      background: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 22),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF1E0DA),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: const Icon(Icons.delete_outline, color: Color(0xFFB33927)),
+      ),
+      child: GestureDetector(
+        onTap: () => _openResult(item),
+        child: Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: const Color(0xFFECE7DE)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.03),
+                blurRadius: 14,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 착장 사진(원본 비율) 또는 무드보드
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: item.userOotdBase64.isNotEmpty
+                    ? ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 108, maxWidth: 84),
+                        child: Image.memory(base64Decode(item.userOotdBase64), fit: BoxFit.contain),
+                      )
+                    : item.base64Image.isNotEmpty
+                        ? Image.memory(base64Decode(item.base64Image),
+                            width: 76, height: 76, fit: BoxFit.cover)
+                        : Container(width: 76, height: 76, color: const Color(0xFFECE7DE)),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '“${item.killingQuote}”',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.playfairDisplay(
+                        fontSize: 14,
+                        height: 1.35,
+                        fontStyle: FontStyle.italic,
+                        fontWeight: FontWeight.w700,
+                        color: const Color(0xFF26231F),
+                      ),
+                    ),
+                    perfumeChip(luxury, '👑', const Color(0xFFF3ECE0)),
+                    if ((affordable['name'] ?? '').toString().isNotEmpty)
+                      perfumeChip(affordable, '🌿', const Color(0xFFEAF0E6)),
+                    if (item.userStory.isNotEmpty) ...[
+                      const SizedBox(height: 7),
+                      Text(
+                        item.userStory,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.notoSans(fontSize: 11, color: const Color(0xFF9A9184)),
                       ),
-                      if ((affordable['name'] ?? '').isNotEmpty) ...[
-                        const SizedBox(height: 3),
-                        Text(
-                          '🌿 Dupe: ${affordable['brand']} ${affordable['name']}',
-                          style: GoogleFonts.notoSans(
-                            fontSize: 11,
-                            color: const Color(0xFF6B5F4D),
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
-                      if (item.userStory.isNotEmpty) ...[
-                        const SizedBox(height: 5),
-                        Text(
-                          '"${item.userStory}"',
-                          style: GoogleFonts.notoSans(
-                            fontSize: 10.5,
-                            color: const Color(0xFF888888),
-                            fontStyle: FontStyle.italic,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
                     ],
-                  ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 

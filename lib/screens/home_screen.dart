@@ -10,6 +10,7 @@ import 'history_screen.dart';
 import 'insights_screen.dart';
 import 'result_screen.dart';
 import 'search_screen.dart';
+import 'wear_calendar_view.dart';
 import 'wishlist_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -212,12 +213,13 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.search, color: Color(0xFF222222), size: 23),
-            tooltip: '향수 검색',
+            icon: const Icon(Icons.calendar_month_outlined,
+                color: Color(0xFF222222), size: 22),
+            tooltip: '착용 캘린더',
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(builder: (context) => const SearchScreen()),
+                MaterialPageRoute(builder: (context) => const WearCalendarScreen()),
               );
             },
           ),
@@ -298,7 +300,36 @@ class _HomeScreenState extends State<HomeScreen> {
                   textAlign: TextAlign.center,
                 ),
               ),
-              const SizedBox(height: 28),
+              const SizedBox(height: 18),
+
+              // 향수 검색 (검색창 모양 버튼 → 검색 화면)
+              InkWell(
+                borderRadius: BorderRadius.circular(24),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const SearchScreen()),
+                ),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(color: const Color(0xFFE6E0D4)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.search, size: 19, color: Color(0xFF8C7B65)),
+                      const SizedBox(width: 10),
+                      Text(
+                        '향수 이름이나 브랜드로 찾아보기',
+                        style: GoogleFonts.notoSans(
+                            fontSize: 13, color: const Color(0xFFA39A8C)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 22),
 
               // -------------------------------------------------------------
               // 1. OOTD 이미지 업로드 카드 (사진 잘림 없이 100% 원본 비율 보존!)

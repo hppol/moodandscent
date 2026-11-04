@@ -7,6 +7,54 @@ import '../widgets/photo_viewer.dart';
 import 'search_screen.dart';
 import 'wear_detail_screen.dart';
 
+// 홈 화면 📅 아이콘으로 여는 독립 화면 (진열장 기록을 불러와 캘린더에 전달)
+class WearCalendarScreen extends StatefulWidget {
+  const WearCalendarScreen({super.key});
+
+  @override
+  State<WearCalendarScreen> createState() => _WearCalendarScreenState();
+}
+
+class _WearCalendarScreenState extends State<WearCalendarScreen> {
+  List<CurationHistoryItem>? _history;
+
+  @override
+  void initState() {
+    super.initState();
+    CurationHistoryItem.getHistory().then((items) {
+      if (mounted) setState(() => _history = items);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF7F5F0),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        centerTitle: true,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_new, size: 18, color: Color(0xFF222222)),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Text(
+          'WEAR CALENDAR',
+          style: GoogleFonts.cormorantGaramond(
+            letterSpacing: 3.5,
+            fontWeight: FontWeight.w800,
+            fontSize: 17,
+            color: const Color(0xFF1E1E1E),
+          ),
+        ),
+      ),
+      body: _history == null
+          ? const Center(child: CircularProgressIndicator(color: _accent))
+          : WearCalendarView(history: _history!),
+    );
+  }
+}
+
 // ==========================================
 // 착용 캘린더: 진열장(받은 추천 전부) 중 '실제로 입고 뿌린 것'만 날짜별로 기록
 // - 날짜 칸에는 향수 이름 (칸이 넓으면 브랜드도), 사진 유무와 관계없이 같은 모양

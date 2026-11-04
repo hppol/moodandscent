@@ -13,7 +13,7 @@ from transformers import BlipProcessor, BlipForConditionalGeneration
 from groq import Groq
 from diffusers import AutoPipelineForText2Image
 from pathlib import Path
-from recommender import load_db, build_vocab, recommend, search_perfumes, similar_perfumes, MyPoolTooSmall
+from recommender import load_db, build_vocab, recommend, search_perfumes, similar_perfumes, image_prompt, MyPoolTooSmall
 import firebase_store
 import time
 import uuid
@@ -141,13 +141,12 @@ def curate(image_bytes: bytes | None, mood_text: str, scope: str = "all") -> dic
     result = recommend(client, perfume_db, perfume_vocab, image_caption, mood_text, weather_text,
                        feedback_future, pool_ids=pool_future)
     copy = result["copy"]
-    raw_sd_prompt = copy.get("sd_prompt_en", "aesthetic luxury perfume moodboard, minimalist, soft light")
-    # SD-Turbo 이미지 퀄리티를 극대화하는 키워드 보강
-    enhanced_sd_prompt = f"{raw_sd_prompt}, award-winning editorial still life photography, cinematic warm lighting, sharp focus, 8k uhd, aesthetic minimalism, high resolution"
+    # 향수병 없이 노트 재료만 그린 과슈 일러스트 (recommender.image_prompt)
+    raw_sd_prompt = image_prompt(copy, result["luxury"])
 
     # 3. Stable Diffusion: 무드보드 이미지 생성 (GPU에서 1초 미만)
     t = time.perf_counter()
-    sd_image = sd_pipe(prompt=enhanced_sd_prompt, num_inference_steps=4, guidance_scale=0.0).images[0]
+    sd_image = sd_pipe(prompt=raw_sd_prompt, num_inference_steps=4, guidance_scale=0.0).images[0]
     buffered = io.BytesIO()
     sd_image.save(buffered, format="JPEG", quality=95)
     img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
